@@ -14,7 +14,7 @@ local A 					= Action
 local _G		 			= _G
 local strmatch				= _G.strmatch	
 local DEFAULT_CHAT_FRAME	= _G.DEFAULT_CHAT_FRAME 
-local ChatEdit_SendText		= _G.ChatEdit_SendText 
+local ChatEdit_SendText		= _G.ChatEdit_SendText or _G.ChatFrameEditBoxMixin.SendText
 local isCallbackInitiated 	= false
 _G.ptgroup 					= 3
 

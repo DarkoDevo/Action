@@ -7,7 +7,7 @@ local _G, print, pairs, ipairs			= _G, print, pairs, ipairs
 local TMW 								= _G.TMW 
 local A 								= _G.Action 
 local Listener							= A.Listener
-local Lib 								= LibStub:NewLibrary("AzeriteTraits", 10)
+local Lib 								= LibStub:NewLibrary("AzeriteTraits", 11)
 
 if not Lib or not A or not TMW then 
 	if A and A.BuildToC < 90001 then 
@@ -41,7 +41,8 @@ local wipe								= _G.wipe
 
 local Enum								= _G.Enum
 local Item								= _G.Item 
-local FindSpellOverrideByID 			= _G.FindSpellOverrideByID
+local C_SpellBook						= _G.C_SpellBook
+local FindSpellOverrideByID 			= C_SpellBook and C_SpellBook.FindSpellOverrideByID or _G.FindSpellOverrideByID
 local AzeriteEmpoweredItem 				= _G.C_AzeriteEmpoweredItem
 local AzeriteEssence 					= _G.C_AzeriteEssence
 local GetSpellName						 = _G.C_Spell and _G.C_Spell.GetSpellName or _G.GetSpellInfo
