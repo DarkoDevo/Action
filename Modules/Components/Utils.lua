@@ -685,7 +685,15 @@ do
         
         module:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED",
             function()
+	                if type(CombatLogGetCurrentEventInfo) ~= "function" then
+	                    return
+	                end
+
                 local _, e, _, sourceGuid, _, _, _, _, _, _, _, spellID, spellName = CombatLogGetCurrentEventInfo()
+	                if not e or not sourceGuid or not spellID or not spellName then
+	                    return
+	                end
+
                 if (e == "SPELL_CAST_SUCCESS" or e == "SPELL_MISS") and sourceGuid == pGUID and not blacklist[spellID] then
                     Env.LastPlayerCastName 	= strlowerCache[spellName]
                     Env.LastPlayerCastID 	= spellID

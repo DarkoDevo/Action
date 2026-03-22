@@ -39,6 +39,28 @@ local CNDT 								= TMW.CNDT							-- TODO: Remove (old profiles)
 local Env 								= CNDT.Env							-- TODO: Remove (old profiles)
 
 local A 								= _G.Action
+local Compat                            = A.Compat or {}
+
+local function untaintNumber(value, fallback)
+	if type(value) == "number" then
+		return value
+	end
+
+	if type(Compat.UntaintNumber) == "function" then
+		return Compat:UntaintNumber(value, fallback)
+	end
+
+	local native = rawget(_G, "untaintNumber")
+	if type(native) == "function" then
+		local ok, result = pcall(native, value, fallback)
+		if ok and type(result) == "number" then
+			return result
+		end
+	end
+
+	return fallback or 0
+end
+
 local CONST 							= A.Const
 local UC								= A.Data.UC
 local Listener							= A.Listener
@@ -819,11 +841,12 @@ do
 			self.GUID 					= unitGUID
 			self.isPlayer 				= isPlayer	
 			self.isSelf					= TeamCacheFriendlyUNITs.player == unitGUID						
-			self.realAHP, self.MHP 		= A_Unit(unitID):Health(), A_Unit(unitID):HealthMax()
+				self.realAHP 				= untaintNumber(A_Unit(unitID):Health(), 0)
+				self.MHP 					= untaintNumber(A_Unit(unitID):HealthMax(), 0)
 			if self.MHP == 0 then 
 				self.realHP 			= 0 -- Fix beta / ptr "Division by zero"
 			else				
-				self.realHP 			= 100 * self.realAHP / self.MHP
+					self.realHP 			= untaintNumber(100 * self.realAHP / self.MHP, 0)
 			end 
 			if self.Role == "AUTO" then 
 				if not isPlayer then 
@@ -834,10 +857,10 @@ do
 			end 
 			
 			if (not self.isPet or db.SelectPets) and (not A_Unit(unitID):IsDead() or self:CanRessurect()) and self:CanSelect() then 					
-				local incomingHeals		= PredictOptions[1] and A_Unit(unitID):GetIncomingHeals() 	 or 0
-				local incomingDMG		= PredictOptions[2] and A_Unit(unitID):GetRealTimeDMG() 	 or 0				
-				local absorbPossitive 	= PredictOptions[5] and A_Unit(unitID):GetAbsorb()			 or 0
-				local absorbNegative	= PredictOptions[6] and A_Unit(unitID):GetTotalHealAbsorbs() or 0							
+					local incomingHeals		= PredictOptions[1] and untaintNumber(A_Unit(unitID):GetIncomingHeals(), 0) 	 or 0
+					local incomingDMG		= PredictOptions[2] and untaintNumber(A_Unit(unitID):GetRealTimeDMG(), 0) 	 or 0				
+					local absorbPossitive 	= PredictOptions[5] and untaintNumber(A_Unit(unitID):GetAbsorb(), 0)			 or 0
+					local absorbNegative	= PredictOptions[6] and untaintNumber(A_Unit(unitID):GetTotalHealAbsorbs(), 0) or 0							
 				
 				-- Prediction 
 				self.incDMG				= incomingDMG
@@ -854,7 +877,7 @@ do
 				end										
 				
 				-- Multiplier - Threat 
-				if not A.IsInPvP and A_Unit(unitID):ThreatSituation() >= 3 then 
+					if not A.IsInPvP and untaintNumber(A_Unit(unitID):ThreatSituation(), 0) >= 3 then 
 					self.HP				= self.HP * db.MultiplierThreat
 				end 
 				
@@ -1859,10 +1882,10 @@ function HealingEngine.GetBossHealth()
 	for bossGUID, bossHolders in pairs(BossIDs) do 
 		if type(bossHolders) == "table" then 
 			for bossUnitID in pairs(bossHolders) do 
-				bossHealth = A_Unit(bossUnitID):Health()
+				bossHealth = untaintNumber(A_Unit(bossUnitID):Health(), 0)
 				if bossHealth > 0 then 
 					healthCurrent = healthCurrent + bossHealth
-					healthMax = healthMax + A_Unit(bossUnitID):HealthMax()
+					healthMax = healthMax + untaintNumber(A_Unit(bossUnitID):HealthMax(), 0)
 					c = c + 1
 					break 
 				end 

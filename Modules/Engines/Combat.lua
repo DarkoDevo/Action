@@ -1075,7 +1075,14 @@ end
 -------------------------------------------------------------------------------
 local COMBAT_LOG_EVENT_UNFILTERED 				= function(...)
 	local timestamp = TMW.time
+	if type(CombatLogGetCurrentEventInfo) ~= "function" then
+		return
+	end
+
 	local _, EVENT, _, SourceGUID, _, sourceFlags, _, DestGUID, _, destFlags, _, spellID, spellName, spellSchool, auraType, a16, a17, a18, a19, a20, a21, a22, a23, a24 = CombatLogGetCurrentEventInfo()
+	if not EVENT then
+		return
+	end
 
 	--[[ For Test
 	if EVENT:match("SPELL_AURA") then

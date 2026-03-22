@@ -62,6 +62,78 @@ local 	 									 IsEquippedItem, 	IsStealthed, 	IsMounted, 	  IsFalling, 	IsSwi
 	  
 local 	 CancelUnitBuff, 	CancelSpellByName, 	  CombatLogGetCurrentEventInfo =
 	  _G.CancelUnitBuff, _G.CancelSpellByName, _G.CombatLogGetCurrentEventInfo	  
+
+local Compat 						= A.Compat or {}
+A.Compat 							= Compat
+
+local RawUnitPower 			= UnitPower
+local RawUnitPowerMax 		= UnitPowerMax
+local RawGetPlayerAuraBySpellID = C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID
+
+Compat.ActionPlayerPowerSnapshots = Compat.ActionPlayerPowerSnapshots or {}
+
+local function GetSafePlayerPowerInfo(unitID, powerType)
+	local snapshotKey = string.format("%s:%s", unitID or "player", tostring(powerType))
+	local snapshot = Compat.ActionPlayerPowerSnapshots[snapshotKey]
+	local currentPower = Compat.NormalizeValue and Compat.NormalizeValue(RawUnitPower(unitID, powerType)) or RawUnitPower(unitID, powerType)
+	local maxPower = Compat.NormalizeValue and Compat.NormalizeValue(RawUnitPowerMax(unitID, powerType)) or RawUnitPowerMax(unitID, powerType)
+
+	if type(currentPower) == "number" and type(maxPower) == "number" and maxPower >= 0 then
+		local safeMax = maxPower > 0 and maxPower or 1
+		local info = {
+			current = currentPower,
+			max = safeMax,
+		}
+		Compat.ActionPlayerPowerSnapshots[snapshotKey] = info
+		return info
+	end
+
+	if type(currentPower) == "number" and snapshot and snapshot.max then
+		return {
+			current = currentPower,
+			max = snapshot.max,
+		}
+	end
+
+	if snapshot and snapshot.max then
+		return snapshot
+	end
+
+	return {
+		current = 0,
+		max = 1,
+	}
+end
+
+UnitPower = function(unitID, powerType)
+	return GetSafePlayerPowerInfo(unitID, powerType).current
+end
+
+UnitPowerMax = function(unitID, powerType)
+	return GetSafePlayerPowerInfo(unitID, powerType).max
+end
+
+local function GetSafePlayerAuraBySpellID(spellID)
+	if type(RawGetPlayerAuraBySpellID) ~= "function" then
+		return nil
+	end
+
+	local auraData = RawGetPlayerAuraBySpellID(spellID)
+	if not auraData then
+		return nil
+	end
+
+	auraData = Compat.NormalizeAuraData and Compat.NormalizeAuraData(auraData) or auraData
+	if type(auraData) ~= "table" then
+		return nil
+	end
+
+	auraData.duration = type(auraData.duration) == "number" and auraData.duration or 0
+	auraData.expirationTime = type(auraData.expirationTime) == "number" and auraData.expirationTime or 0
+	auraData.applications = type(auraData.applications) == "number" and auraData.applications or 0
+
+	return auraData
+end
 	  
 -- Bags / Inventory
 local 	 C_Container = _G.C_Container
@@ -208,7 +280,15 @@ local DataRunePresence				= Data.RunePresence
 local DataGlyphs					= Data.Glyphs
 
 function Data.logAura(...)
+	if type(CombatLogGetCurrentEventInfo) ~= "function" then
+		return
+	end
+
 	local _, EVENT, _, SourceGUID, _, _, _, DestGUID, _, _, _, _, spellName, _, auraType = CombatLogGetCurrentEventInfo() 
+	if not EVENT or not SourceGUID or not DestGUID or not spellName then
+		return
+	end
+
 	if EVENT == "SPELL_AURA_APPLIED" and SourceGUID == TeamCacheFriendlyUNITs.player then 
 		if auraType == "DEBUFF" then 
 			DataAuraDeBuffUnitCount[spellName] 	= (DataAuraDeBuffUnitCount[spellName] or 0) + 1
@@ -734,14 +814,14 @@ function Player:HasAuraBySpellID(spellID, caster)
 	local auraData = {}
     if type(spellID) == "table" then
         for _, id in pairs(spellID) do
-            auraData = C_UnitAuras.GetPlayerAuraBySpellID(id)
+	            auraData = GetSafePlayerAuraBySpellID(id)
             if auraData and (not caster or auraData.sourceUnit == "player") then
                 return auraData.expirationTime == 0 and huge or auraData.expirationTime - TMW.time, auraData.duration, TMW.time - (auraData.expirationTime - auraData.duration)
             end
         end
         return 0, 0, 0
     else
-        auraData = C_UnitAuras.GetPlayerAuraBySpellID(spellID)
+	        auraData = GetSafePlayerAuraBySpellID(spellID)
         if auraData and (not caster or auraData.sourceUnit == "player") then
             return auraData.expirationTime == 0 and huge or auraData.expirationTime - TMW.time, auraData.duration, TMW.time - (auraData.expirationTime - auraData.duration)
         end
@@ -755,14 +835,14 @@ function Player:HasAuraStacksBySpellID(spellID)
 	local auraData
     if type(spellID) == "table" then
         for _, id in pairs(spellID) do
-            auraData = C_UnitAuras.GetPlayerAuraBySpellID(id)
+	            auraData = GetSafePlayerAuraBySpellID(id)
             if auraData then
                 return auraData.applications == 0 and 1 or auraData.applications
             end
         end
         return 0
     else
-        auraData = C_UnitAuras.GetPlayerAuraBySpellID(spellID)
+	        auraData = GetSafePlayerAuraBySpellID(spellID)
         if auraData then
             return auraData.applications == 0 and 1 or auraData.applications
         end

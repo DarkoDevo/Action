@@ -20,6 +20,7 @@ local strlowerCache  			= TMW.strlowerCache
 
 local A   						= _G.Action	
 local CONST 					= A.Const
+local Compat					= A.Compat or {}
 local Listener					= A.Listener
 local Print						= A.Print
 local toNum 					= A.toNum
@@ -475,18 +476,26 @@ end
 
 function A:GetSpellCharges()
 	-- @return number
+	local chargesInfo = Compat.SafeGetSpellCharges and Compat:SafeGetSpellCharges(self.ID)
+	if chargesInfo then
+		return chargesInfo.currentCharges or 0
+	end
+
 	local charges = GetSpellCharges(self.ID)
-	if not charges then 
-		charges = 0
-	elseif type(charges) == "table" then 
-		charges = charges.currentCharges
-	end 
-	
-	return charges
+	if type(charges) == "table" then
+		return charges.currentCharges or 0
+	end
+
+	return charges or 0
 end
 
 function A:GetSpellChargesMax()
 	-- @return number
+	local chargesInfo = Compat.SafeGetSpellCharges and Compat:SafeGetSpellCharges(self.ID)
+	if chargesInfo then
+		return chargesInfo.maxCharges or 0
+	end
+
 	local charges, max_charges = GetSpellCharges(self.ID)
 	if type(charges) == "table" then 
 		max_charges = charges.maxCharges
@@ -501,6 +510,24 @@ end
 
 function A:GetSpellChargesFrac()
 	-- @return number	
+	local chargesInfo = Compat.SafeGetSpellCharges and Compat:SafeGetSpellCharges(self.ID)
+	if chargesInfo then
+		local charges = chargesInfo.currentCharges or 0
+		local maxCharges = chargesInfo.maxCharges or 0
+		local start = chargesInfo.cooldownStartTime or 0
+		local duration = chargesInfo.cooldownDuration or 0
+
+		if maxCharges <= 0 then
+			return 0
+		end
+
+		if charges >= maxCharges or duration <= 0 then
+			return charges
+		end
+
+		return charges + ((TMW.time - start) / duration)
+	end
+
 	local charges, maxCharges, start, duration = GetSpellCharges(self.ID)
 	if type(charges) == "table" then 		
 		maxCharges = charges.maxCharges
@@ -522,6 +549,16 @@ end
 
 function A:GetSpellChargesFullRechargeTime()
 	-- @return number
+	local chargesInfo = Compat.SafeGetSpellCharges and Compat:SafeGetSpellCharges(self.ID)
+	if chargesInfo then
+		local duration = chargesInfo.cooldownDuration or 0
+		if duration > 0 then
+			return (self:GetSpellChargesMax() - self:GetSpellChargesFrac()) * duration
+		end
+
+		return 0
+	end
+
 	local charges, _, _, duration = GetSpellCharges(self.ID)
 	if type(charges) == "table" then 
 		duration = charges.cooldownDuration

@@ -30,6 +30,9 @@ local GetAddOnInfo 				= C_AddOns and C_AddOns.GetAddOnInfo or _G.GetAddOnInfo
 
 local CreateFrame 				= _G.CreateFrame
 local UnitGUID 					= _G.UnitGUID
+local xpcall 						= _G.xpcall
+local debugstack 				= _G.debugstack
+local CombatLogGetCurrentEventInfo = _G.CombatLogGetCurrentEventInfo
 
 local CACHE_DEFAULT_TIMER		= CONST.CACHE_DEFAULT_TIMER	 
 
@@ -42,17 +45,47 @@ end
 -- Listener
 -------------------------------------------------------------------------------
 local listeners 				= {}
+local listenerErrors 			= {}
 local frame 					= CreateFrame("Frame")
 local PassEventOn 				= {
 	["ACTION_EVENT_BASE"]		= true,
 }	
+
+local function IsSupportedEvent(event)
+	if event == "COMBAT_LOG_EVENT_UNFILTERED" then
+		if type(CombatLogGetCurrentEventInfo) ~= "function" then
+			return false
+		end
+
+		if type(_G.ActionHasSecretRestrictions) == "function" and _G.ActionHasSecretRestrictions() then
+			return false
+		end
+	end
+
+	return true
+end
+
 frame:SetScript("OnEvent", function(_, event, ...)
+	if event == "COMBAT_LOG_EVENT_UNFILTERED" and type(_G.ActionHasSecretRestrictions) == "function" and _G.ActionHasSecretRestrictions() then
+		return
+	end
+
 	if listeners[event] then 
 		for k in pairs(listeners[event]) do		
-			if PassEventOn[k] then 
-				listeners[event][k](event, ...)
-			else 
-				listeners[event][k](...)
+			if not (listenerErrors[event] and listenerErrors[event][k]) then
+				local callback = listeners[event][k]
+				local ok, err
+				if PassEventOn[k] then 
+					ok, err = xpcall(callback, debugstack, event, ...)
+				else 
+					ok, err = xpcall(callback, debugstack, ...)
+				end
+
+				if not ok then
+					listenerErrors[event] = listenerErrors[event] or {}
+					listenerErrors[event][k] = true
+					print("[Action.Listener] Disabled failing listener " .. tostring(k) .. " for " .. tostring(event) .. ": " .. tostring(err))
+				end
 			end
 		end
 	end 
@@ -60,6 +93,10 @@ end)
 
 A.Listener	 					= {
 	Add 						= function(self, name, event, callback, passEvent)
+			if not IsSupportedEvent(event) then
+				return
+			end
+
 		if not listeners[event] then
 			frame:RegisterEvent(event)
 			listeners[event] = {}
@@ -105,13 +142,45 @@ A.Listener	 					= {
 -------------------------------------------------------------------------------
 -- Remap
 -------------------------------------------------------------------------------
-local A_Unit, ActiveUnitPlates, insertMulti
+local NullUnit = setmetatable({}, {
+	__index = function()
+		return function()
+			return false
+		end
+	end,
+})
+
+local function SafeAUnit(unitID)
+	if A and type(A.Unit) == "function" then
+		local ok, unit = pcall(A.Unit, unitID)
+		if ok and unit then
+			return unit
+		end
+	end
+
+	return NullUnit
+end
+
+local function SafeInsertMulti(t, ...)
+	local fn = A and A.TableInsertMulti
+	if type(fn) == "function" then
+		return fn(t, ...)
+	end
+
+	for i = 1, select("#", ...) do
+		t[#t + 1] = (select(i, ...))
+	end
+end
+
+local A_Unit = SafeAUnit
+local ActiveUnitPlates = (A.MultiUnits and A.MultiUnits:GetActiveUnitPlates()) or {}
+local insertMulti = SafeInsertMulti
 
 A.Listener:Add("ACTION_EVENT_TOOLS", "ADDON_LOADED", function(addonName)
 	if addonName == CONST.ADDON_NAME then 
-		A_Unit 							= A.Unit 
-		ActiveUnitPlates				= A.MultiUnits:GetActiveUnitPlates()
-		insertMulti						= A.TableInsertMulti
+		A_Unit 							= type(A.Unit) == "function" and A.Unit or SafeAUnit
+		ActiveUnitPlates				= (A.MultiUnits and A.MultiUnits:GetActiveUnitPlates()) or ActiveUnitPlates
+		insertMulti						= type(A.TableInsertMulti) == "function" and A.TableInsertMulti or SafeInsertMulti
 		
 		A.Listener:Remove("ACTION_EVENT_TOOLS", "ADDON_LOADED")	
 	end 

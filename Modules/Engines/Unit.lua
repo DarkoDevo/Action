@@ -22,7 +22,18 @@ local A   									= _G.Action
 local BuildToC								= A.BuildToC
 local CONST 								= A.Const
 local Listener								= A.Listener
-local insertMulti							= A.TableInsertMulti
+local function SafeInsertMulti(t, ...)
+	local fn = A and A.TableInsertMulti
+	if type(fn) == "function" then
+		return fn(t, ...)
+	end
+
+	for i = 1, select("#", ...) do
+		t[#t + 1] = (select(i, ...))
+	end
+end
+
+local insertMulti							= SafeInsertMulti
 local toNum 								= A.toNum
 local strElemBuilder						= A.strElemBuilder
 local InstanceInfo							= A.InstanceInfo
@@ -61,8 +72,8 @@ local TeamCacheEnemyTANK					= TeamCacheEnemy.TANK
 local TeamCacheEnemyDAMAGER					= TeamCacheEnemy.DAMAGER
 local TeamCacheEnemyDAMAGER_MELEE			= TeamCacheEnemy.DAMAGER_MELEE
 --local TeamCacheEnemyDAMAGER_RANGE			= TeamCacheEnemy.DAMAGER_RANGE
-local ActiveUnitPlates						= MultiUnits:GetActiveUnitPlates()
-local ActiveUnitPlatesAny					= MultiUnits:GetActiveUnitPlatesAny()
+local ActiveUnitPlates						= MultiUnits and MultiUnits:GetActiveUnitPlates() or {}
+local ActiveUnitPlatesAny					= MultiUnits and MultiUnits:GetActiveUnitPlatesAny() or {}
 
 local CACHE_DEFAULT_TIMER_UNIT				= CONST.CACHE_DEFAULT_TIMER_UNIT
 
@@ -77,21 +88,283 @@ local UnitIsUnit, UnitPlayerOrPetInRaid, UnitInAnyGroup, UnitPlayerOrPetInParty,
 	  UnitPowerType, UnitPowerMax, UnitPower, UnitName, UnitCanCooperate, UnitCastingInfo, UnitChannelInfo, UnitCreatureType, UnitCreatureFamily, UnitHealth, UnitHealthMax, UnitGetIncomingHeals, UnitGUID, UnitHasIncomingResurrection, UnitIsVisible, UnitGetTotalHealAbsorbs, UnitStagger, UnitAura =
 	  UnitIsUnit, UnitPlayerOrPetInRaid, UnitInAnyGroup, UnitPlayerOrPetInParty, UnitInRange, UnitInVehicle, UnitIsQuestBoss, UnitEffectiveLevel, UnitLevel, UnitThreatSituation, UnitRace, UnitClass, UnitGroupRolesAssigned, UnitClassification, UnitExists, UnitIsConnected, UnitIsCharmed, UnitIsGhost, UnitIsDeadOrGhost, UnitIsFeignDeath, UnitIsPlayer, UnitPlayerControlled, UnitCanAttack, UnitIsEnemy, UnitAttackSpeed,
 	  UnitPowerType, UnitPowerMax, UnitPower, UnitName, UnitCanCooperate, UnitCastingInfo, UnitChannelInfo, UnitCreatureType, UnitCreatureFamily, UnitHealth, UnitHealthMax, UnitGetIncomingHeals, UnitGUID, UnitHasIncomingResurrection, UnitIsVisible, UnitGetTotalHealAbsorbs, UnitStagger, _G.C_UnitAuras.GetAuraDataByIndex
+
+local Compat 													= A.Compat or {}
+A.Compat 														= Compat
+
+local RawUnitAura 										= UnitAura
+local RawUnitHealth 									= UnitHealth
+local RawUnitHealthMax 								= UnitHealthMax
+local RawUnitPower 									= UnitPower
+local RawUnitPowerMax 								= UnitPowerMax
+local RawUnitCastingInfo 							= UnitCastingInfo
+local RawUnitChannelInfo 							= UnitChannelInfo
+
+local ShouldUnitHealthMaxBeSecret 				= _G.ShouldUnitHealthMaxBeSecret
+local GetPowerTypeSecrecy 							= _G.GetPowerTypeSecrecy
+local GetSpellCastSecrecy 							= _G.GetSpellCastSecrecy
+
+Compat.ActionUnitHealthSnapshots = Compat.ActionUnitHealthSnapshots or {}
+Compat.ActionUnitPowerSnapshots = Compat.ActionUnitPowerSnapshots or {}
+
+local function SafeUnitAura(unitID, index, filter)
+	local auraData = RawUnitAura(unitID, index, filter)
+	if not auraData then
+		return nil
+	end
+
+	auraData = Compat.NormalizeAuraData and Compat.NormalizeAuraData(auraData) or auraData
+	if type(auraData) ~= "table" then
+		auraData = {}
+	end
+
+	auraData.duration = type(auraData.duration) == "number" and auraData.duration or 0
+	auraData.expirationTime = type(auraData.expirationTime) == "number" and auraData.expirationTime or 0
+	auraData.applications = type(auraData.applications) == "number" and auraData.applications or 0
+
+	return auraData
+end
+
+UnitAura = SafeUnitAura
+
+local function GetUnitHealthInfo(unitID)
+	local rawGuid = (Compat.NormalizeValue and Compat.NormalizeValue(UnitGUID(unitID))) or UnitGUID(unitID)
+	local snapshotKey = rawGuid or unitID or "unknown"
+	local snapshot = Compat.ActionUnitHealthSnapshots[snapshotKey]
+	local currentHealth = Compat.NormalizeValue and Compat.NormalizeValue(RawUnitHealth(unitID)) or RawUnitHealth(unitID)
+	local maxHealth = Compat.NormalizeValue and Compat.NormalizeValue(RawUnitHealthMax(unitID)) or RawUnitHealthMax(unitID)
+
+	if type(ShouldUnitHealthMaxBeSecret) == "function" then
+		local ok, restricted = pcall(ShouldUnitHealthMaxBeSecret, unitID)
+		if ok and Compat.IsRestrictionEnabled and Compat.IsRestrictionEnabled(restricted) then
+			maxHealth = nil
+		end
+	end
+
+	if type(currentHealth) == "number" and type(maxHealth) == "number" and maxHealth > 0 then
+		local info = {
+			kind = "exact",
+			current = currentHealth,
+			max = maxHealth,
+			percent = math_max(0, math.min(100, currentHealth * 100 / maxHealth)),
+		}
+		Compat.ActionUnitHealthSnapshots[snapshotKey] = info
+		return info
+	end
+
+	if UnitIsDeadOrGhost(unitID) then
+		return {
+			kind = "exact",
+			current = 0,
+			max = (snapshot and snapshot.max) or 1,
+			percent = 0,
+		}
+	end
+
+	if type(currentHealth) == "number" and snapshot and type(snapshot.max) == "number" and snapshot.max > 0 then
+		return {
+			kind = "approx",
+			current = currentHealth,
+			max = snapshot.max,
+			percent = math_max(0, math.min(100, currentHealth * 100 / snapshot.max)),
+		}
+	end
+
+	if snapshot and type(snapshot.max) == "number" and snapshot.max > 0 then
+		return {
+			kind = "approx",
+			current = snapshot.current,
+			max = snapshot.max,
+			percent = snapshot.percent or 100,
+		}
+	end
+
+	if type(maxHealth) == "number" and maxHealth > 0 then
+		return {
+			kind = "approx",
+			current = maxHealth,
+			max = maxHealth,
+			percent = 100,
+		}
+	end
+
+	return {
+		kind = "unknown",
+		current = 1,
+		max = 1,
+		percent = 100,
+	}
+end
+
+local function GetUnitPowerInfo(unitID, powerType)
+	local rawGuid = (Compat.NormalizeValue and Compat.NormalizeValue(UnitGUID(unitID))) or UnitGUID(unitID)
+	local snapshotKey = string.format("%s:%s", rawGuid or unitID or "unknown", tostring(powerType))
+	local snapshot = Compat.ActionUnitPowerSnapshots[snapshotKey]
+	local currentPower = Compat.NormalizeValue and Compat.NormalizeValue(RawUnitPower(unitID, powerType)) or RawUnitPower(unitID, powerType)
+	local maxPower = Compat.NormalizeValue and Compat.NormalizeValue(RawUnitPowerMax(unitID, powerType)) or RawUnitPowerMax(unitID, powerType)
+
+	if type(GetPowerTypeSecrecy) == "function" then
+		local ok, restricted = pcall(GetPowerTypeSecrecy, powerType)
+		if ok and Compat.IsRestrictionEnabled and Compat.IsRestrictionEnabled(restricted) then
+			currentPower = nil
+			maxPower = nil
+		end
+	end
+
+	if type(currentPower) == "number" and type(maxPower) == "number" and maxPower >= 0 then
+		local safeMax = maxPower > 0 and maxPower or 1
+		local info = {
+			kind = "exact",
+			current = currentPower,
+			max = safeMax,
+			percent = math_max(0, math.min(100, currentPower * 100 / safeMax)),
+		}
+		Compat.ActionUnitPowerSnapshots[snapshotKey] = info
+		return info
+	end
+
+	if type(currentPower) == "number" and snapshot and type(snapshot.max) == "number" and snapshot.max > 0 then
+		return {
+			kind = "approx",
+			current = currentPower,
+			max = snapshot.max,
+			percent = math_max(0, math.min(100, currentPower * 100 / snapshot.max)),
+		}
+	end
+
+	if snapshot and type(snapshot.max) == "number" and snapshot.max > 0 then
+		return snapshot
+	end
+
+	return {
+		kind = "unknown",
+		current = 0,
+		max = 1,
+		percent = 0,
+	}
+end
+
+local function GetSafeCastInfo(unitID)
+	local isChannel
+	local castName, _, _, castStartTime, castEndTime, _, _, notInterruptable, spellID = RawUnitCastingInfo(unitID)
+	if not castName then
+		castName, _, _, castStartTime, castEndTime, _, notInterruptable, spellID = RawUnitChannelInfo(unitID)
+		if castName then
+			isChannel = true
+		end
+	end
+
+	castName = Compat.NormalizeValue and Compat.NormalizeValue(castName) or castName
+	spellID = Compat.NormalizeValue and Compat.NormalizeValue(spellID) or spellID
+	notInterruptable = (Compat.NormalizeValue and Compat.NormalizeValue(notInterruptable) or notInterruptable) == true
+
+	if not castName then
+		return nil, nil, nil, notInterruptable, spellID, isChannel
+	end
+
+	if type(GetSpellCastSecrecy) == "function" and spellID then
+		local ok, restricted = pcall(GetSpellCastSecrecy, spellID)
+		if ok and Compat.IsRestrictionEnabled and Compat.IsRestrictionEnabled(restricted) then
+			castStartTime, castEndTime = 0, 0
+		end
+	end
+
+	if type(castStartTime) ~= "number" or type(castEndTime) ~= "number" or castEndTime < castStartTime then
+		castStartTime, castEndTime = 0, 0
+	end
+
+	return castName, castStartTime, castEndTime, notInterruptable, spellID, isChannel
+end
 -------------------------------------------------------------------------------
 -- Remap
 -------------------------------------------------------------------------------
-local A_Unit, A_GetSpellInfo, A_GetGCD, A_GetCurrentGCD, A_IsTalentLearned, A_IsSpellInRange, A_EnemyTeam, A_GetUnitItem
+local NullUnit = setmetatable({}, {
+	__index = function()
+		return function()
+			return false
+		end
+	end,
+})
+
+local function SafeAUnit(unitID)
+	if A and type(A.Unit) == "function" then
+		local ok, unit = pcall(A.Unit, unitID)
+		if ok and unit then
+			return unit
+		end
+	end
+
+	return NullUnit
+end
+
+local function SafeGetSpellInfo(...)
+	local fn = A and A.GetSpellInfo or GetSpellInfo
+	if type(fn) == "function" then
+		return fn(...)
+	end
+end
+
+local function SafeGetGCD(...)
+	local fn = A and A.GetGCD
+	if type(fn) == "function" then
+		return fn(...)
+	end
+	return 0
+end
+
+local function SafeGetCurrentGCD(...)
+	local fn = A and A.GetCurrentGCD
+	if type(fn) == "function" then
+		return fn(...)
+	end
+	return 0
+end
+
+local function SafeIsTalentLearned(...)
+	local fn = A and A.IsTalentLearned
+	if type(fn) == "function" then
+		return fn(...)
+	end
+	return false
+end
+
+local function SafeIsSpellInRange(...)
+	local fn = A and A.IsSpellInRange
+	if type(fn) == "function" then
+		return fn(...)
+	end
+	return false
+end
+
+local function SafeEnemyTeam(...)
+	local fn = A and A.EnemyTeam
+	if type(fn) == "function" then
+		return fn(...)
+	end
+	return nil
+end
+
+local function SafeGetUnitItem(...)
+	local fn = A and A.GetUnitItem
+	if type(fn) == "function" then
+		return fn(...)
+	end
+	return nil
+end
+
+local A_Unit, A_GetSpellInfo, A_GetGCD, A_GetCurrentGCD, A_IsTalentLearned, A_IsSpellInRange, A_EnemyTeam, A_GetUnitItem =
+	SafeAUnit, SafeGetSpellInfo, SafeGetGCD, SafeGetCurrentGCD, SafeIsTalentLearned, SafeIsSpellInRange, SafeEnemyTeam, SafeGetUnitItem
 
 Listener:Add("ACTION_EVENT_UNIT", "ADDON_LOADED", function(addonName)
 	if addonName == CONST.ADDON_NAME then
-		A_Unit						= A.Unit
-		A_GetSpellInfo				= A.GetSpellInfo
-		A_GetGCD					= A.GetGCD
-		A_GetCurrentGCD				= A.GetCurrentGCD
-		A_IsTalentLearned			= A.IsTalentLearned
-		A_IsSpellInRange			= A.IsSpellInRange
-		A_EnemyTeam					= A.EnemyTeam
-		A_GetUnitItem				= A.GetUnitItem
+		A_Unit						= type(A.Unit) == "function" and A.Unit or SafeAUnit
+		A_GetSpellInfo				= type(A.GetSpellInfo) == "function" and A.GetSpellInfo or SafeGetSpellInfo
+		A_GetGCD					= type(A.GetGCD) == "function" and A.GetGCD or SafeGetGCD
+		A_GetCurrentGCD				= type(A.GetCurrentGCD) == "function" and A.GetCurrentGCD or SafeGetCurrentGCD
+		A_IsTalentLearned			= type(A.IsTalentLearned) == "function" and A.IsTalentLearned or SafeIsTalentLearned
+		A_IsSpellInRange			= type(A.IsSpellInRange) == "function" and A.IsSpellInRange or SafeIsSpellInRange
+		A_EnemyTeam					= type(A.EnemyTeam) == "function" and A.EnemyTeam or SafeEnemyTeam
+		A_GetUnitItem				= type(A.GetUnitItem) == "function" and A.GetUnitItem or SafeGetUnitItem
 
 		Listener:Remove("ACTION_EVENT_UNIT", "ADDON_LOADED")
 	end
@@ -99,7 +372,7 @@ end)
 -------------------------------------------------------------------------------
 
 local function GetGUID(unitID)
-	return TeamCacheFriendlyUNITs[unitID] or TeamCacheEnemyUNITs[unitID] or UnitGUID(unitID)
+	return TeamCacheFriendlyUNITs[unitID] or TeamCacheEnemyUNITs[unitID] or ((A.Compat and A.Compat.NormalizeValue and A.Compat.NormalizeValue(UnitGUID(unitID))) or UnitGUID(unitID)) or unitID
 end
 
 -------------------------------------------------------------------------------
@@ -3783,15 +4056,7 @@ A.Unit = PseudoClass({
 		-- [5] spellID (@number or @nil)
 		-- [6] isChannel (@boolean)
 		local unitID 						= self.UnitID
-		local isChannel
-		local castName, _, _, castStartTime, castEndTime, _, _, notInterruptable, spellID = UnitCastingInfo(unitID)
-		if not castName then
-			castName, _, _, castStartTime, castEndTime, _, notInterruptable, spellID = UnitChannelInfo(unitID)
-			if castName then
-				isChannel = true
-			end
-		end
-		return castName, castStartTime, castEndTime, notInterruptable, spellID, isChannel
+			return GetSafeCastInfo(unitID)
 	end, "UnitGUID"),
 	IsCastingRemains						= Cache:Pass(function(self, argSpellID)
 		-- @return:
@@ -3829,9 +4094,11 @@ A.Unit = PseudoClass({
 		end
 
 		if castName and (not argSpellID or A_GetSpellInfo(argSpellID) == castName) then
-			TotalCastTime = (castEndTime - castStartTime) / 1000
-			CurrentCastTimeSeconds = (TMW.time * 1000 - castStartTime) / 1000
-			CurrentCastTimeLeftPercent = CurrentCastTimeSeconds * 100 / TotalCastTime
+				if castEndTime and castStartTime and castEndTime > castStartTime then
+					TotalCastTime = (castEndTime - castStartTime) / 1000
+					CurrentCastTimeSeconds = math_max((TMW.time * 1000 - castStartTime) / 1000, 0)
+					CurrentCastTimeLeftPercent = TotalCastTime > 0 and CurrentCastTimeSeconds * 100 / TotalCastTime or 0
+				end
 		end
 
 		return TotalCastTime, TotalCastTime - CurrentCastTimeSeconds, CurrentCastTimeLeftPercent, spellID, castName, notInterruptable, isChannel
@@ -4476,12 +4743,12 @@ A.Unit = PseudoClass({
 	Health									= Cache:Pass(function(self)
 		-- @return number
 		local unitID 						= self.UnitID
-	    return UnitHealth(unitID)
+		    return GetUnitHealthInfo(unitID).current
 	end, "UnitID"),
 	HealthMax								= Cache:Pass(function(self)
 		-- @return number
 		local unitID 						= self.UnitID
-	    return UnitHealthMax(unitID)
+		    return GetUnitHealthInfo(unitID).max
 	end, "UnitID"),
 	HealthDeficit							= Cache:Pass(function(self)
 		-- @return number
@@ -4500,13 +4767,8 @@ A.Unit = PseudoClass({
 	end, "UnitID"),
 	HealthPercent							= Cache:Pass(function(self)
 		-- @return number
-		local unitID 						= self.UnitID
-		local maxHP							= self(unitID):HealthMax()
-		if maxHP == 0 then
-			return 0 						-- Fix beta / ptr "Division by zero"
-		else
-			return self(unitID):Health() * 100 / maxHP
-		end
+			local unitID 						= self.UnitID
+			return GetUnitHealthInfo(unitID).percent
 	end, "UnitID"),
 	HealthPercentLosePerSecond				= Cache:Pass(function(self)
 		-- @return number
@@ -4531,7 +4793,7 @@ A.Unit = PseudoClass({
 	Power									= Cache:Pass(function(self)
 		-- @return number
 		local unitID 						= self.UnitID
-	    return UnitPower(unitID)
+		    return GetUnitPowerInfo(unitID, select(1, UnitPowerType(unitID))).current
 	end, "UnitID"),
 	PowerType								= Cache:Pass(function(self)
 		-- @return number
@@ -4541,7 +4803,7 @@ A.Unit = PseudoClass({
 	PowerMax								= Cache:Pass(function(self)
 		-- @return number
 		local unitID 						= self.UnitID
-	    return UnitPowerMax(unitID)
+		    return GetUnitPowerInfo(unitID, select(1, UnitPowerType(unitID))).max
 	end, "UnitID"),
 	PowerDeficit							= Cache:Pass(function(self)
 		-- @return number
@@ -4551,12 +4813,13 @@ A.Unit = PseudoClass({
 	PowerDeficitPercent						= Cache:Pass(function(self)
 		-- @return number
 		local unitID 						= self.UnitID
-	    return self(unitID):PowerDeficit() * 100 / self(unitID):PowerMax()
+			local maxPower 						= self(unitID):PowerMax()
+		    return maxPower > 0 and self(unitID):PowerDeficit() * 100 / maxPower or 0
 	end, "UnitID"),
 	PowerPercent							= Cache:Pass(function(self)
 		-- @return number
 		local unitID 						= self.UnitID
-	    return self(unitID):Power() * 100 / self(unitID):PowerMax()
+		    return GetUnitPowerInfo(unitID, select(1, UnitPowerType(unitID))).percent
 	end, "UnitID"),
 	AuraTooltipNumberByIndex				= Cache:Wrap(function(self, spell, filter, caster, byID, kindKey, requestedIndex)
 		-- @return number
@@ -5820,7 +6083,15 @@ local EventInfo		 					= {
 	["SPELL_INSTAKILL"] 				= "RESET",
 }
 Listener:Add("ACTION_EVENT_UNIT", "COMBAT_LOG_EVENT_UNFILTERED", 		function(...)
+		if type(CombatLogGetCurrentEventInfo) ~= "function" then
+			return
+		end
+
 	local _, EVENT, _, _, _, _, _, DestGUID, _, _, _, _, spellName = CombatLogGetCurrentEventInfo()
+		if not EVENT or not DestGUID then
+			return
+		end
+
 	if EventInfo[EVENT] == "RESET" then
 		InfoCacheMoveIn[DestGUID] 		= nil
 		InfoCacheMoveOut[DestGUID] 		= nil

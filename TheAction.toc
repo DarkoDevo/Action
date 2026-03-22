@@ -1,4 +1,4 @@
-## Interface: 110205
+## Interface: 120000
 ## Title: TellMeWhen |cff00ccff The Action|r
 ## Notes: (\/)O_O(\/)
 ## RequiredDeps: TellMeWhen
@@ -32,6 +32,7 @@ Lib\StdUI\StdUi.xml
 Modules\Components\Const\Constans.lua
 
 Action.lua
+Modules\Engines\SecretEngineCompat.lua
 
 Modules\Components\Enum\TriggerGCD.lua
 Modules\Components\Enum\SpellDuration.lua
